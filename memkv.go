@@ -2,22 +2,78 @@ package memkv
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"sync"
 	"syscall"
 )
 
+//TODO take care of file_size and data_size at optimize
+
+type KV interface {
+	Get(key string) ([]byte, error)
+	Set(key string, value []byte) error
+	Remove(key string) error
+	Exists(key string) (bool, error)
+	io.Closer
+}
+
 type MemKV struct {
-	kv           map[string][]byte
-	file         *os.File
-	writer_count int
-	write_lock   sync.Mutex
+	kv              map[string][]byte
+	file            *os.File
+	writer_count    int
+	write_lock      sync.Mutex
+	open            bool
+	file_size       int
+	data_size       int
+	optimize_factor int
+	optimize_lock   sync.Mutex
+}
+
+func (kv *MemKV) optimizeIfNecessary() {
+	//Fast fail
+	if kv.data_size*kv.optimize_factor < kv.file_size {
+		return
+	}
+	kv.optimize_lock.Lock()
+	defer kv.optimize_lock.Unlock()
+
+	// Safeguard against other concurrent optimize request
+	if kv.data_size*kv.optimize_factor < kv.file_size {
+		return
+	}
+	kv.Optimize()
+}
+
+func (kv *MemKV) SetOptimizeFactor(factor int) {
+	kv.optimize_factor = factor
 }
 
 func (kv *MemKV) Close() error {
-	kv.file.Close()
-	return nil
+	//Already closed
+	if !kv.open {
+		return nil
+	}
+	kv.open = false //Stop further writes
+
+	kv.write_lock.Lock()
+	defer kv.write_lock.Unlock()
+
+	for kv.writer_count != 0 {
+		//Wait for all writes to complete
+	}
+
+	err := kv.file.Close()
+	return err
+}
+
+func (kv *MemKV) Sync() error {
+	if !kv.open {
+		return errors.New("Could not sync closed file")
+	}
+	err := kv.file.Sync()
+	return err
 }
 
 func Open(path string) (*MemKV, error) {
@@ -33,6 +89,8 @@ func Open(path string) (*MemKV, error) {
 
 	kv := MemKV{}
 	kv.kv = make(map[string][]byte)
+	kv.open = true
+	kv.optimize_factor = 3
 
 	file, err := os.Open(path)
 	if err != nil {
@@ -65,6 +123,15 @@ func Open(path string) (*MemKV, error) {
 			if err != nil || count != int(bytes_to_int16(keylength)) {
 				return nil, err
 			}
+
+			/** OPTIMIZATION ENTRY START **/
+			old_value := kv.kv[string(key)]
+			if old_value != nil {
+				kv.data_size = kv.data_size - 1 - 2 - int(bytes_to_int16(keylength)) - int(len(old_value))
+			}
+			kv.file_size = kv.file_size + 1 + 2 + int(bytes_to_int16(keylength))
+			/** OPTIMIZATION ENTRY END **/
+
 			delete(kv.kv, string(key))
 		case WRITE:
 			//READ KEY
@@ -93,6 +160,11 @@ func Open(path string) (*MemKV, error) {
 			}
 
 			kv.kv[string(key)] = value
+
+			/** OPTIMIZATION ENTRY START **/
+			kv.data_size = kv.data_size + 1 + 2 + 4 + int(bytes_to_int16(keylength)) + int(len(value))
+			kv.file_size = kv.file_size + 1 + 2 + 4 + int(bytes_to_int16(keylength)) + int(len(value))
+			/** OPTIMIZATION ENTRY END **/
 		}
 
 	}
@@ -119,6 +191,8 @@ func (kv *MemKV) changeWriterCount(i int) {
 
 func (kv *MemKV) Set(key string, value []byte) error {
 
+	kv.optimizeIfNecessary()
+
 	kv.write_lock.Lock()
 	kv.changeWriterCount(1)
 	defer kv.changeWriterCount(-1)
@@ -129,6 +203,7 @@ func (kv *MemKV) Set(key string, value []byte) error {
 		if bytes.Equal(existing, value) {
 			return nil
 		}
+		kv.data_size = kv.data_size - 1 - 2 - 4 - int(len(key)) - int(len(value))
 	}
 
 	kv.kv[key] = value
@@ -148,7 +223,10 @@ func (kv *MemKV) Set(key string, value []byte) error {
 		return err
 	}
 
-	//TODO OPTIMIZE THE SIZE
+	/** OPTIMIZATION ENTRY START **/
+	kv.data_size = kv.data_size + 1 + 2 + 4 + int(keylength) + int(len(value))
+	kv.file_size = kv.file_size + 1 + 2 + 4 + int(keylength) + int(len(value))
+	/** OPTIMIZATION ENTRY END **/
 
 	return nil
 }
@@ -186,10 +264,16 @@ func (kv *MemKV) Optimize() error {
 }
 
 func (kv *MemKV) Remove(key string) error {
-	_, exists := kv.kv[key]
+
+	kv.optimizeIfNecessary()
+
+	value, exists := kv.kv[key]
 	if !exists {
 		return nil
 	}
+
+	kv.data_size = kv.data_size - 1 - 2 - 4 - int(len(key)) - int(len(value))
+	kv.file_size = kv.file_size + 1 + 2 + int(len(key))
 
 	kv.write_lock.Lock()
 	kv.changeWriterCount(1)
@@ -208,7 +292,6 @@ func (kv *MemKV) Remove(key string) error {
 	}
 
 	delete(kv.kv, key)
-	//TODO OPTIMIZE THE SIZE
 
 	return nil
 }
