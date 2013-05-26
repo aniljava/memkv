@@ -1,7 +1,8 @@
-package main
+package memkv
 
 import (
 	"bytes"
+	"os"
 	"testing"
 )
 
@@ -17,6 +18,7 @@ func TestSet(t *testing.T) {
 		t.Error("Does not match !")
 	}
 	db.Close()
+	os.Remove("test.db")
 }
 
 func TestDelete(t *testing.T) {
@@ -32,6 +34,7 @@ func TestDelete(t *testing.T) {
 		t.Error("Does not match !")
 	}
 	db.Close()
+	os.Remove("test.db")
 }
 
 func TestNonExisiting(t *testing.T) {
@@ -42,4 +45,30 @@ func TestNonExisiting(t *testing.T) {
 		t.Error("Expected nil")
 	}
 	db.Close()
+	os.Remove("test.db")
+}
+
+func TestOptimizationStats(t *testing.T) {
+
+	if true {
+		return
+	}
+
+	db, _ := Open("test.db")
+
+	for i := 0; i < SKIP_OPTIMIZATION_SIZE*2; i++ {
+
+		if i%100000 == 0 {
+			fmt.Println("WRITING", strconv.Itoa(i), "/", SKIP_OPTIMIZATION_SIZE*2, "STATS:", db.file_size, db.data_size, len(db.kv), time.Now())
+		}
+		err := db.Set(strconv.Itoa(i)+"key", []byte("DATA"))
+		db.Remove(strconv.Itoa(i) + "key")
+		if err != nil {
+			fmt.Println(err)
+		}
+
+	}
+
+	db.Close()
+	os.Remove("test.db")
 }

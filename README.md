@@ -15,6 +15,9 @@ MemKV is a in-memory Key value store backed by append only file with following m
 
 	SEE memkv_test.go
 
-## TODO
+## Auto Optimization
 
-- Autooptimize
+Auto-optimization of the file occurs when the size of the backing file exceeds
+by **optimization_factor (Default 3)** times. Auto-optimization is skipped if
+the file size is less than 64MB. To disable or slow down the auto-
+optimization, increase **optimization_factor** to a large number.

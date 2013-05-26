@@ -3,13 +3,14 @@ package memkv
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"sync"
 	"syscall"
+	"time"
 )
-
-//TODO take care of file_size and data_size at optimize
 
 type KV interface {
 	Get(key string) ([]byte, error)
@@ -31,18 +32,26 @@ type MemKV struct {
 	optimize_lock   sync.Mutex
 }
 
+//TODO Update optimize stats upon optimization
+
+const SKIP_OPTIMIZATION_SIZE = 64 * 1024 * 1024 // 64MB
+
 func (kv *MemKV) optimizeIfNecessary() {
 	//Fast fail
-	if kv.data_size*kv.optimize_factor < kv.file_size {
+	if kv.file_size < SKIP_OPTIMIZATION_SIZE || kv.data_size*kv.optimize_factor > kv.file_size {
 		return
 	}
+
+	fmt.Println("Optimizing")
+
 	kv.optimize_lock.Lock()
 	defer kv.optimize_lock.Unlock()
 
 	// Safeguard against other concurrent optimize request
-	if kv.data_size*kv.optimize_factor < kv.file_size {
+	if kv.file_size < SKIP_OPTIMIZATION_SIZE || kv.data_size*kv.optimize_factor > kv.file_size {
 		return
 	}
+
 	kv.Optimize()
 }
 
@@ -259,6 +268,7 @@ func (kv *MemKV) Optimize() error {
 
 	file, _ := os.OpenFile(kv.file.Name(), syscall.O_RDWR|syscall.O_APPEND, 0660)
 	kv.file = file
+	kv.file_size = kv.data_size
 
 	return nil
 }
